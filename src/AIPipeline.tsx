@@ -159,7 +159,8 @@ const getVideoPrompt = (storyboard: unknown, segmentIndex: number, ideaFallback:
 	const seg = segments[segmentIndex];
 	if (isRecord(seg)) {
 		const p = asString(seg.video_prompt);
-		if (p && p.trim()) {
+		// If video_prompt exists (even if empty), treat it as explicit.
+		if (p !== undefined) {
 			return p.trim();
 		}
 
@@ -936,7 +937,7 @@ export const AIPipeline: React.FC = () => {
 			});
 
 			// Auto-extract last frame if provider didn't supply one.
-			if (!lastFrameSrc && currentSegmentIndex + 1 < segments.length) {
+			if (!lastFrameSrc) {
 				setBusy('extractFrame');
 				try {
 					const extracted = await extractLastFrameAsDataUrl(videoSrc);
@@ -952,6 +953,64 @@ export const AIPipeline: React.FC = () => {
 					);
 				}
 			}
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const addNewSegmentAfterLast = async () => {
+		setError(null);
+		if (!storyboardConfirmed) {
+			setError('请先确认分镜');
+			return;
+		}
+		const current = segmentOutputs.find((s) => s.segmentIndex === currentSegmentIndex);
+		if (!current?.videoSrc) {
+			setError('请先生成本段视频');
+			return;
+		}
+		if (currentSegmentIndex + 1 < segments.length) {
+			setError('仅支持在最后一段新增段落（请先切换到最后一段）');
+			return;
+		}
+		if (!isRecord(storyboardParsed)) {
+			setError('分镜 JSON 无效或缺少 segments');
+			return;
+		}
+		const segs = storyboardParsed.segments;
+		if (!Array.isArray(segs)) {
+			setError('分镜 JSON 无效或缺少 segments');
+			return;
+		}
+
+		setBusy('extractFrame');
+		try {
+			let lastFrame = current.lastFrameSrc;
+			if (!lastFrame) {
+				lastFrame = await extractLastFrameAsDataUrl(current.videoSrc);
+			}
+			setSegmentOutputs((prev) =>
+				prev.map((s) => (s.segmentIndex === currentSegmentIndex ? { ...s, lastFrameSrc: lastFrame } : s))
+			);
+
+			const nextSegmentIndex = segs.length;
+			const newSeg = {
+				segment_index: nextSegmentIndex + 1,
+				segment_title: `新增段落 ${nextSegmentIndex + 1}`,
+				segment_summary: '',
+				duration_s: settings.maxSegmentSeconds,
+				first_frame_prompt: '',
+				video_prompt: '',
+				shots: [],
+			};
+			const nextStoryboard = { ...storyboardParsed, segments: [...segs, newSeg] };
+			setStoryboardParsed(nextStoryboard);
+			setStoryboardText(JSON.stringify(nextStoryboard, null, 2));
+
+			setCurrentSegmentIndex(nextSegmentIndex);
+			setCurrentSeedImageSrc(lastFrame);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
@@ -1405,6 +1464,17 @@ export const AIPipeline: React.FC = () => {
 									disabled={busy !== null || !currentOutput?.videoSrc || currentSegmentIndex + 1 >= segments.length}
 									variant="ghost"
 								/>
+								<Button
+									label={busy === 'extractFrame' ? '新增段落中...' : '新增段落'}
+									onClick={addNewSegmentAfterLast}
+									disabled={
+										busy !== null ||
+										!currentOutput?.videoSrc ||
+										segments.length === 0 ||
+										currentSegmentIndex + 1 < segments.length
+									}
+									variant="ghost"
+								/>
 							</div>
 
 							{segments.length ? (
@@ -1513,7 +1583,11 @@ export const AIPipeline: React.FC = () => {
 
 							{currentOutput?.lastFrameSrc ? (
 								<div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-									<div style={{ fontSize: 12, color: PALETTE.muted }}>本段最后一帧（将作为下一段 seed）</div>
+									<div style={{ fontSize: 12, color: PALETTE.muted }}>
+										{currentSegmentIndex + 1 < segments.length
+											? '本段最后一帧（将作为下一段 seed）'
+											: '本段最后一帧（可作为新增段落 seed）'}
+									</div>
 									<div
 										style={{
 											borderRadius: 14,
